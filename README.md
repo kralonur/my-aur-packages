@@ -16,11 +16,40 @@ eim-bin/             # mirror of the AUR package directory (tracked files only)
 .github/workflows/   # update workflow
 ```
 
+## Packages
+
+### eim-bin
+
+- **AUR package:** [`eim-bin`](https://aur.archlinux.org/packages/eim-bin)
+  (split: `eim-cli`, `eim-gui`)
+- **Upstream source:** GitHub release, tracked via
+  [aur-updater](https://github.com/kralonur/aur-updater) `source = "github_release"`.
+- **Upstream repository:**
+  [`espressif/idf-im-ui`](https://github.com/espressif/idf-im-ui)
+  (ESP-IDF Installation Manager UI; binary releases of the `eim` CLI and GUI).
+- **Version detection:** latest non-prerelease GitHub release tag, with the `v`
+  prefix stripped (e.g. `v0.14.1` -> `0.14.1`).
+- **Architectures:** `x86_64`, `aarch64`, `armv7h` (see `eim-bin/PKGBUILD`).
+- **Mirrored files** under `eim-bin/`:
+  - `PKGBUILD`
+  - `.SRCINFO`
+  - `eim-gui.desktop`
+- **Update path:** when a new release appears, `aur-updater` bumps `pkgver`,
+  resets `pkgrel=1`, refreshes the per-arch `sha256sums_*` blocks via
+  `updpkgsums`, regenerates `.SRCINFO`, then CI commits the change here and
+  pushes the updated `PKGBUILD` + `.SRCINFO` to the AUR package repository.
+
+The `.zip` release artifacts, `pkg/`, `src/`, and `icon.png` are not tracked
+(see `eim-bin/.gitignore`) - only the package recipe is version-controlled.
+
 ## Adding a package
 
-Append a `[[package]]` block to `packages.toml` and copy the AUR-tracked files
+Append a `[[package]]` block to `packages.toml` (see the
+[aur-updater config docs](https://github.com/kralonur/aur-updater#config) for
+all supported source types and fields) and copy the AUR-tracked files
 (`PKGBUILD`, `.SRCINFO`, auxiliary sources, `.gitignore`) into a matching
-directory.
+directory. Add a short entry to the **Packages** section above describing the
+package and its upstream source.
 
 ## Secrets
 
