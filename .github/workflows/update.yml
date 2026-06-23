@@ -23,6 +23,8 @@ concurrency:
 env:
   UPDATER_URL: https://github.com/kralonur/aur-updater/releases/latest/download/aur-updater-x86_64-unknown-linux-musl
   AUR_PKGSITE: ssh://aur@aur.archlinux.org/eim-bin.git
+  COMMIT_AUTHOR_NAME: "github-actions[bot]"
+  COMMIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
 
 jobs:
   update:
@@ -34,7 +36,7 @@ jobs:
       - name: Install system packages
         run: pacman -Syu --noconfirm --needed base-devel git curl pacman-contrib openssh
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           set-safe-directory: true
@@ -62,23 +64,36 @@ jobs:
           ./updater update --config packages.toml --changed-packages-out /tmp/changed-packages
           EOF
 
+      - name: Check for changes
+        id: changes
+        run: |
+          set -euo pipefail
+          if [[ -s /tmp/changed-packages ]]; then
+            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+            echo "::notice::New version detected: $new_version"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::All packages are up to date; nothing to commit or push."
+          fi
+
       - name: Commit to GitHub
-        if: ${{ hashFiles('/tmp/changed-packages') != '' }}
+        if: steps.changes.outputs.changed == 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name  "$COMMIT_AUTHOR_NAME"
+          git config --global user.email "$COMMIT_AUTHOR_EMAIL"
           git add eim-bin/PKGBUILD eim-bin/.SRCINFO
           if ! git diff --cached --quiet; then
-            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
-            git commit -m "chore: update eim-bin to $new_version"
+            git commit -m "chore: update eim-bin to ${{ steps.changes.outputs.new_version }}"
             git push origin HEAD
           fi
 
       - name: Push to AUR
-        if: ${{ hashFiles('/tmp/changed-packages') != '' }}
+        if: steps.changes.outputs.changed == 'true'
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
@@ -94,14 +109,13 @@ jobs:
           cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
 
           cd /tmp/aur-eim-bin
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "$COMMIT_AUTHOR_NAME"
+          git config user.email "$COMMIT_AUTHOR_EMAIL"
           git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
 
           git add PKGBUILD .SRCINFO
           if ! git diff --cached --quiet; then
-            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
-            git commit -m "chore: update to $new_version"
+            git commit -m "chore: update to ${{ steps.changes.outputs.new_version }}"
             git push origin HEAD
           fi
 
