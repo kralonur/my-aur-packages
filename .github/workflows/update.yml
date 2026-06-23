@@ -158,12 +158,19 @@ jobs:
           COMMIT_MESSAGE: ${{ inputs.commit_message }}
         run: |
           set -euo pipefail
+          # Mirror the author of the latest commit on the maintenance repo's
+          # main branch onto the AUR commit, so manual fixes are attributed to
+          # the actual maintainer rather than the CI bot.
+          AUTHOR_NAME=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=format:%an)
+          AUTHOR_EMAIL=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=format:%ae)
+          echo "::notice::AUR commit author: $AUTHOR_NAME <$AUTHOR_EMAIL>"
+
           git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
           cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
 
           cd /tmp/aur-eim-bin
-          git config user.name  "$COMMIT_AUTHOR_NAME"
-          git config user.email "$COMMIT_AUTHOR_EMAIL"
+          git config user.name  "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
           git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
 
           git add PKGBUILD .SRCINFO
