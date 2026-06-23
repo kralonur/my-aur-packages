@@ -1,0 +1,34 @@
+name: Setup AUR SSH
+description: Write AUR_SSH_PRIVATE_KEY and AUR_SSH_KNOWN_HOSTS secrets to ~/.ssh for AUR git operations
+
+inputs:
+  private-key:
+    description: AUR SSH private key (contents of ~/.ssh/aur_ci_ed25519)
+    required: true
+  known-hosts:
+    description: Pinned AUR known_hosts entries (ssh-keyscan -t ed25519 aur.archlinux.org)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Write AUR SSH key and known_hosts
+      shell: bash
+      env:
+        AUR_SSH_PRIVATE_KEY: ${{ inputs.private-key }}
+        AUR_SSH_KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
+          echo "::error::AUR_SSH_PRIVATE_KEY is empty or missing"
+          exit 1
+        fi
+        if [[ -z "${AUR_SSH_KNOWN_HOSTS:-}" ]]; then
+          echo "::error::AUR_SSH_KNOWN_HOSTS is empty or missing"
+          exit 1
+        fi
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_aur
+        chmod 600 ~/.ssh/id_aur
+        printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts

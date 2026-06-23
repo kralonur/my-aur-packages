@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
+    inputs:
+      manual_sync:
+        description: "Sync tracked PKGBUILD/.SRCINFO from main to AUR without running aur-updater"
+        type: boolean
+        default: false
+      commit_message:
+        description: "Commit message for the AUR push (manual_sync only)"
+        type: string
+        default: "chore: manual sync"
   push:
     branches:
       - main
@@ -28,6 +37,7 @@ env:
 
 jobs:
   update:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.manual_sync == true) }}
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -94,17 +104,15 @@ jobs:
 
       - name: Push to AUR
         if: steps.changes.outputs.changed == 'true'
-        env:
-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+        uses: ./.github/actions/setup-aur-ssh
+        with:
+          private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          known-hosts: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+
+      - name: Mirror tracked files to AUR
+        if: steps.changes.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_aur
-          chmod 600 ~/.ssh/id_aur
-          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-
           git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
           cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
 
@@ -117,6 +125,54 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: update to ${{ steps.changes.outputs.new_version }}"
             git push origin HEAD
+          else
+            echo "::notice::AUR clone already matches; nothing to push."
+          fi
+
+          rm -f ~/.ssh/id_aur
+          rm -rf /tmp/aur-eim-bin
+
+  manual-sync:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.manual_sync == true }}
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install system packages
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          set-safe-directory: true
+
+      - name: Setup AUR SSH
+        uses: ./.github/actions/setup-aur-ssh
+        with:
+          private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          known-hosts: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+
+      - name: Sync tracked files to AUR
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        run: |
+          set -euo pipefail
+          git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
+          cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
+
+          cd /tmp/aur-eim-bin
+          git config user.name  "$COMMIT_AUTHOR_NAME"
+          git config user.email "$COMMIT_AUTHOR_EMAIL"
+          git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
+
+          git add PKGBUILD .SRCINFO
+          if ! git diff --cached --quiet; then
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin HEAD
+            echo "::notice::Pushed '$COMMIT_MESSAGE' to AUR."
+          else
+            echo "::notice::AUR clone already matches tracked files; nothing to push."
           fi
 
           rm -f ~/.ssh/id_aur
