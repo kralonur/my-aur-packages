@@ -1,0 +1,7 @@
+[[package]]
+name = "eim-bin"
+path = "eim-bin"
+source = "github_release"
+repo = "espressif/idf-im-ui"
+strip_prefixes = ["v"]
+reset_pkgrel = true

@@ -1,0 +1,109 @@
+name: AUR Updates
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - packages.toml
+      - eim-bin/**
+      - .github/workflows/update.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aur-update
+  cancel-in-progress: false
+
+env:
+  UPDATER_URL: https://github.com/kralonur/aur-updater/releases/latest/download/aur-updater-x86_64-unknown-linux-musl
+  AUR_PKGSITE: ssh://aur@aur.archlinux.org/eim-bin.git
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install system packages
+        run: pacman -Syu --noconfirm --needed base-devel git curl pacman-contrib openssh
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          set-safe-directory: true
+
+      - name: Prepare build user
+        run: |
+          id pkgbuild >/dev/null 2>&1 || useradd --create-home --shell /bin/bash pkgbuild
+          chown -R pkgbuild:pkgbuild "$GITHUB_WORKSPACE"
+
+      - name: Download updater
+        run: |
+          curl -fsSL "$UPDATER_URL" -o updater
+          chmod +x updater
+          chown pkgbuild:pkgbuild updater
+
+      - name: Run updater
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          runuser --preserve-environment -u pkgbuild -- bash <<'EOF'
+          set -euo pipefail
+          export HOME=/home/pkgbuild
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./updater update --config packages.toml --changed-packages-out /tmp/changed-packages
+          EOF
+
+      - name: Commit to GitHub
+        if: ${{ hashFiles('/tmp/changed-packages') != '' }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add eim-bin/PKGBUILD eim-bin/.SRCINFO
+          if ! git diff --cached --quiet; then
+            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
+            git commit -m "chore: update eim-bin to $new_version"
+            git push origin HEAD
+          fi
+
+      - name: Push to AUR
+        if: ${{ hashFiles('/tmp/changed-packages') != '' }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_aur
+          chmod 600 ~/.ssh/id_aur
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
+          cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
+
+          cd /tmp/aur-eim-bin
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
+
+          git add PKGBUILD .SRCINFO
+          if ! git diff --cached --quiet; then
+            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
+            git commit -m "chore: update to $new_version"
+            git push origin HEAD
+          fi
+
+          rm -f ~/.ssh/id_aur
+          rm -rf /tmp/aur-eim-bin

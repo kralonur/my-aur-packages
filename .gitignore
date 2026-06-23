@@ -1,0 +1,17 @@
+# tools / build output
+*.tar
+*.tar.*
+*.jar
+*.exe
+*.msi
+*.zip
+*.tgz
+*.log
+*.log.*
+*.sig
+*.deb
+
+# don't commit downloaded sources / build dirs (paranoia; the eim-bin/.gitignore covers its own)
+pkg/
+src/
+.DS_Store
