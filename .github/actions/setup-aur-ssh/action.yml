@@ -1,5 +1,5 @@
 name: Setup AUR SSH
-description: Write AUR_SSH_PRIVATE_KEY and AUR_SSH_KNOWN_HOSTS secrets to ~/.ssh for AUR git operations
+description: Write AUR_SSH_PRIVATE_KEY and AUR_SSH_KNOWN_HOSTS to $HOME/.ssh and expose SSH_DIR for later steps
 
 inputs:
   private-key:
@@ -9,10 +9,16 @@ inputs:
     description: Pinned AUR known_hosts entries (ssh-keyscan -t ed25519 aur.archlinux.org)
     required: true
 
+outputs:
+  ssh-dir:
+    description: Absolute path to the directory holding id_aur and known_hosts (pass to subsequent ssh/git steps)
+    value: ${{ steps.paths.outputs.ssh-dir }}
+
 runs:
   using: composite
   steps:
     - name: Write AUR SSH key and known_hosts
+      id: paths
       shell: bash
       env:
         AUR_SSH_PRIVATE_KEY: ${{ inputs.private-key }}
@@ -27,8 +33,17 @@ runs:
           echo "::error::AUR_SSH_KNOWN_HOSTS is empty or missing"
           exit 1
         fi
-        mkdir -p ~/.ssh && chmod 700 ~/.ssh
-        printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_aur
-        chmod 600 ~/.ssh/id_aur
-        printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-        chmod 644 ~/.ssh/known_hosts
+        # Resolve the SSH dir from the actual passwd entry, NOT from $HOME.
+        # OpenSSH's tilde expansion for UserKnownHostsFile uses getpwuid, so
+        # an absolute path must be passed explicitly later; we write to the
+        # same dir ssh will resolve ~ to.
+        SSH_DIR="$(getent passwd "$(id -u)" | cut -d: -f6)/.ssh"
+        mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR"
+        printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$SSH_DIR/id_aur"
+        chmod 600 "$SSH_DIR/id_aur"
+        # Strip comment lines so the file is unambiguous even if the secret
+        # contains ssh-keyscan's "# host ..." preamble.
+        printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" | grep -v '^[[:space:]]*#' > "$SSH_DIR/known_hosts"
+        chmod 644 "$SSH_DIR/known_hosts"
+        echo "ssh-dir=$SSH_DIR" >> "$GITHUB_OUTPUT"
+        echo "::notice::AUR SSH material written to $SSH_DIR"

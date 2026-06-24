@@ -104,6 +104,7 @@ jobs:
 
       - name: Push to AUR
         if: steps.changes.outputs.changed == 'true'
+        id: aur-ssh
         uses: ./.github/actions/setup-aur-ssh
         with:
           private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
@@ -111,15 +112,26 @@ jobs:
 
       - name: Mirror tracked files to AUR
         if: steps.changes.outputs.changed == 'true'
+        env:
+          AUR_SSH_DIR: ${{ steps.aur-ssh.outputs.ssh-dir }}
         run: |
           set -euo pipefail
-          git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
+          # Absolute paths so OpenSSH skips tilde expansion (which would use
+          # the passwd home, not $HOME) for the identity and known_hosts.
+          SSH_CMD="ssh -i $AUR_SSH_DIR/id_aur \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=$AUR_SSH_DIR/known_hosts \
+            -o PasswordAuthentication=no \
+            -o PreferredAuthentications=publickey"
+
+          GIT_SSH_COMMAND="$SSH_CMD" git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
           cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
 
           cd /tmp/aur-eim-bin
           git config user.name  "$COMMIT_AUTHOR_NAME"
           git config user.email "$COMMIT_AUTHOR_EMAIL"
-          git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
+          git config core.sshCommand "$SSH_CMD"
 
           git add PKGBUILD .SRCINFO
           if ! git diff --cached --quiet; then
@@ -129,7 +141,7 @@ jobs:
             echo "::notice::AUR clone already matches; nothing to push."
           fi
 
-          rm -f ~/.ssh/id_aur
+          rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
           rm -rf /tmp/aur-eim-bin
 
   manual-sync:
@@ -148,6 +160,7 @@ jobs:
           set-safe-directory: true
 
       - name: Setup AUR SSH
+        id: aur-ssh
         uses: ./.github/actions/setup-aur-ssh
         with:
           private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
@@ -156,6 +169,7 @@ jobs:
       - name: Sync tracked files to AUR
         env:
           COMMIT_MESSAGE: ${{ inputs.commit_message }}
+          AUR_SSH_DIR: ${{ steps.aur-ssh.outputs.ssh-dir }}
         run: |
           set -euo pipefail
           # Mirror the author of the latest commit on the maintenance repo's
@@ -165,13 +179,22 @@ jobs:
           AUTHOR_EMAIL=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=format:%ae)
           echo "::notice::AUR commit author: $AUTHOR_NAME <$AUTHOR_EMAIL>"
 
-          git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
+          # Absolute paths so OpenSSH skips tilde expansion (which would use
+          # the passwd home, not $HOME) for the identity and known_hosts.
+          SSH_CMD="ssh -i $AUR_SSH_DIR/id_aur \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=$AUR_SSH_DIR/known_hosts \
+            -o PasswordAuthentication=no \
+            -o PreferredAuthentications=publickey"
+
+          GIT_SSH_COMMAND="$SSH_CMD" git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
           cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
 
           cd /tmp/aur-eim-bin
           git config user.name  "$AUTHOR_NAME"
           git config user.email "$AUTHOR_EMAIL"
-          git config core.sshCommand "ssh -i ~/.ssh/id_aur -o IdentitiesOnly=yes"
+          git config core.sshCommand "$SSH_CMD"
 
           git add PKGBUILD .SRCINFO
           if ! git diff --cached --quiet; then
@@ -182,5 +205,5 @@ jobs:
             echo "::notice::AUR clone already matches tracked files; nothing to push."
           fi
 
-          rm -f ~/.ssh/id_aur
+          rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
           rm -rf /tmp/aur-eim-bin
