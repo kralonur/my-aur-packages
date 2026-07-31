@@ -172,6 +172,7 @@ jobs:
           AUR_SSH_DIR: ${{ steps.aur-ssh.outputs.ssh-dir }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # Mirror the author of the latest commit on the maintenance repo's
           # main branch onto the AUR commit, so manual fixes are attributed to
           # the actual maintainer rather than the CI bot.
