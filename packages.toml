@@ -5,3 +5,11 @@ source = "github_release"
 repo = "espressif/idf-im-ui"
 strip_prefixes = ["v"]
 reset_pkgrel = true
+
+[[package]]
+name = "snander"
+path = "snander"
+source = "github_release"
+repo = "McMCCRU/SNANDer"
+strip_prefixes = ["v."]
+reset_pkgrel = true

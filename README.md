@@ -6,13 +6,14 @@ CI-driven AUR maintenance using
 `packages.toml` lists the packages this repo keeps in sync. The
 `.github/workflows/update.yml` workflow checks upstream versions on a schedule,
 bumps `pkgver`, regenerates checksums and `.SRCINFO`, then commits the change
-here and pushes the result to AUR.
+here and reconciles the tracked package files with AUR.
 
 ## Layout
 
 ```
 packages.toml        # list of packages + upstream sources
 eim-bin/             # mirror of the AUR package directory (tracked files only)
+snander/             # mirror of the AUR package directory (tracked files only)
 .github/workflows/   # update workflow
 ```
 
@@ -37,10 +38,31 @@ eim-bin/             # mirror of the AUR package directory (tracked files only)
 - **Update path:** when a new release appears, `aur-updater` bumps `pkgver`,
   resets `pkgrel=1`, refreshes the per-arch `sha256sums_*` blocks via
   `updpkgsums`, regenerates `.SRCINFO`, then CI commits the change here and
-  pushes the updated `PKGBUILD` + `.SRCINFO` to the AUR package repository.
+  pushes the updated tracked package files to the AUR package repository.
 
 The `.zip` release artifacts, `pkg/`, `src/`, and `icon.png` are not tracked
 (see `eim-bin/.gitignore`) - only the package recipe is version-controlled.
+
+### snander
+
+- **AUR package:** [`snander`](https://aur.archlinux.org/packages/snander)
+- **Upstream source:** GitHub release tag from
+  [`McMCCRU/SNANDer`](https://github.com/McMCCRU/SNANDer), tracked via
+  [aur-updater](https://github.com/kralonur/aur-updater) `source = "github_release"`.
+- **Version detection:** latest non-prerelease GitHub release tag, with the
+  `v.` prefix stripped (e.g. `v.1.7.9.3` -> `1.7.9.3`).
+- **Architecture:** `x86_64`.
+- **Mirrored files** under `snander/`:
+  - `PKGBUILD`
+  - `.SRCINFO`
+- **Update path:** when a new release appears, `aur-updater` updates the
+  version and checksum, regenerates `.SRCINFO`, then CI commits the change here
+  and pushes the updated tracked package files to the AUR package repository.
+
+The update workflow processes every package configured in `packages.toml`,
+creates a separate maintenance-repository commit for each changed package, and
+reconciles all tracked package files with the matching AUR repository. The
+tracked files in this repository are authoritative for that synchronization.
 
 ## Adding a package
 

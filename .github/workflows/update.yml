@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       manual_sync:
-        description: "Sync tracked PKGBUILD/.SRCINFO from main to AUR without running aur-updater"
+        description: "Sync all tracked package files from main to AUR without running aur-updater"
         type: boolean
         default: false
       commit_message:
@@ -20,6 +20,10 @@ on:
     paths:
       - packages.toml
       - eim-bin/**
+      - snander/**
+      - '**/PKGBUILD'
+      - '**/.SRCINFO'
+      - .github/actions/setup-aur-ssh/action.yml
       - .github/workflows/update.yml
 
 permissions:
@@ -30,8 +34,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UPDATER_URL: https://github.com/kralonur/aur-updater/releases/latest/download/aur-updater-x86_64-unknown-linux-musl
-  AUR_PKGSITE: ssh://aur@aur.archlinux.org/eim-bin.git
+  UPDATER_URL: https://github.com/kralonur/aur-updater/releases/download/v0.3.0/aur-updater-x86_64-unknown-linux-musl
+  UPDATER_SHA256: e7c83e01117184794a58a47e7c02b9b262acd1c48c71c0dde5e4aef3b71857a1
+  AUR_PKGSITE: ssh://aur@aur.archlinux.org
   COMMIT_AUTHOR_NAME: "github-actions[bot]"
   COMMIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
 
@@ -46,7 +51,7 @@ jobs:
       - name: Install system packages
         run: pacman -Syu --noconfirm --needed base-devel git curl pacman-contrib openssh
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           set-safe-directory: true
@@ -59,65 +64,122 @@ jobs:
       - name: Download updater
         run: |
           curl -fsSL "$UPDATER_URL" -o updater
+          echo "$UPDATER_SHA256  updater" | sha256sum -c -
           chmod +x updater
           chown pkgbuild:pkgbuild updater
 
-      - name: Run updater
+      - name: Run updater for each package
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           runuser --preserve-environment -u pkgbuild -- bash <<'EOF'
           set -euo pipefail
           export HOME=/home/pkgbuild
           cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          ./updater update --config packages.toml --changed-packages-out /tmp/changed-packages
+
+          rm -f /tmp/changed-packages /tmp/failed-packages
+          : > /tmp/changed-packages
+          : > /tmp/failed-packages
+
+          while IFS= read -r package; do
+            [[ -z "$package" ]] && continue
+            changed_file="/tmp/changed-package-$package"
+            rm -f "$changed_file"
+
+            echo "::group::Updating $package"
+            if ./updater update \
+              --config packages.toml \
+              --package "$package" \
+              --changed-packages-out "$changed_file"; then
+              if [[ -s "$changed_file" ]]; then
+                cat "$changed_file" >> /tmp/changed-packages
+              fi
+            else
+              printf '%s\n' "$package" >> /tmp/failed-packages
+              # Do not leave a partially updated recipe behind.
+              git restore --source=HEAD -- "$package"
+              echo "::error::Failed to update $package"
+            fi
+            echo "::endgroup::"
+          done < <(
+            awk -F'"' '
+              /^\[\[package\]\]/ {
+                if (name != "" && enabled) print name
+                name = ""
+                enabled = 1
+              }
+              /^name = "/ { name = $2 }
+              /^enabled = false[[:space:]]*$/ { enabled = 0 }
+              END { if (name != "" && enabled) print name }
+            ' packages.toml
+          )
           EOF
 
-      - name: Check for changes
+      - name: Check for package changes
         id: changes
         run: |
           set -euo pipefail
+          # AUR reconciliation runs on every scheduled/push update so that
+          # failed pushes and tracked auxiliary-file drift are retried.
+          echo "aur_sync=true" >> "$GITHUB_OUTPUT"
+
           if [[ -s /tmp/changed-packages ]]; then
-            new_version="$(awk -F'\t' '{print $2; exit}' /tmp/changed-packages)"
+            package_updates=$(awk 'BEGIN { ORS = "" } { if (NR > 1) printf ", "; printf "%s to %s", $1, $2 }' /tmp/changed-packages)
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
-            echo "::notice::New version detected: $new_version"
+            echo "::notice::Updates detected: $package_updates"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::All packages are up to date; nothing to commit or push."
+            echo "::notice::No package version updates detected; reconciling tracked files with AUR."
           fi
 
-      - name: Commit to GitHub
+      - name: Commit package changes to GitHub
         if: steps.changes.outputs.changed == 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global user.name  "$COMMIT_AUTHOR_NAME"
+          git config --global user.name "$COMMIT_AUTHOR_NAME"
           git config --global user.email "$COMMIT_AUTHOR_EMAIL"
-          git add eim-bin/PKGBUILD eim-bin/.SRCINFO
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update eim-bin to ${{ steps.changes.outputs.new_version }}"
-            git push origin HEAD
-          fi
 
-      - name: Push to AUR
-        if: steps.changes.outputs.changed == 'true'
+          while IFS=$'\t' read -r package new_version; do
+            [[ -z "$package" ]] && continue
+            package_dir="$GITHUB_WORKSPACE/$package"
+
+            if [[ ! -f "$package_dir/PKGBUILD" || ! -f "$package_dir/.SRCINFO" ]]; then
+              echo "::error::Missing PKGBUILD or .SRCINFO for package '$package'"
+              exit 1
+            fi
+
+            git add -- "$package/PKGBUILD" "$package/.SRCINFO"
+            if git diff --cached --quiet; then
+              echo "::error::No staged changes for package '$package'"
+              exit 1
+            fi
+
+            git commit -m "chore: update $package to $new_version"
+          done < /tmp/changed-packages
+
+          # Push all package-specific commits together to avoid triggering
+          # another workflow run between individual pushes.
+          git push origin HEAD
+
+      - name: Setup AUR SSH
+        if: steps.changes.outputs.aur_sync == 'true'
         id: aur-ssh
         uses: ./.github/actions/setup-aur-ssh
         with:
           private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           known-hosts: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
 
-      - name: Mirror tracked files to AUR
-        if: steps.changes.outputs.changed == 'true'
+      - name: Reconcile tracked packages with AUR
+        if: steps.changes.outputs.aur_sync == 'true'
         env:
           AUR_SSH_DIR: ${{ steps.aur-ssh.outputs.ssh-dir }}
         run: |
           set -euo pipefail
-          # Absolute paths so OpenSSH skips tilde expansion (which would use
-          # the passwd home, not $HOME) for the identity and known_hosts.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           SSH_CMD="ssh -i $AUR_SSH_DIR/id_aur \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
@@ -125,24 +187,156 @@ jobs:
             -o PasswordAuthentication=no \
             -o PreferredAuthentications=publickey"
 
-          GIT_SSH_COMMAND="$SSH_CMD" git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
-          cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
+          : > /tmp/failed-aur-packages
 
-          cd /tmp/aur-eim-bin
-          git config user.name  "$COMMIT_AUTHOR_NAME"
-          git config user.email "$COMMIT_AUTHOR_EMAIL"
-          git config core.sshCommand "$SSH_CMD"
+          cleanup() {
+            rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
+          }
+          trap cleanup EXIT
 
-          git add PKGBUILD .SRCINFO
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update to ${{ steps.changes.outputs.new_version }}"
-            git push origin HEAD
-          else
-            echo "::notice::AUR clone already matches; nothing to push."
+          package_version() {
+            awk -F= '
+              $1 ~ /^[[:space:]]*pkgver[[:space:]]*$/ {
+                value = $2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' "$GITHUB_WORKSPACE/$1/PKGBUILD"
+          }
+
+          package_was_updated() {
+            awk -F'\t' -v wanted="$1" '$1 == wanted { found = 1 } END { exit !found }' /tmp/changed-packages
+          }
+
+          package_update_failed() {
+            awk -v wanted="$1" '$1 == wanted { found = 1 } END { exit !found }' /tmp/failed-packages
+          }
+
+          mirror_package() {
+            local package="$1"
+            local package_dir="$GITHUB_WORKSPACE/$package"
+            local aur_dir="/tmp/aur-$package"
+            local new_version
+            local commit_message
+
+            if [[ ! -f "$package_dir/PKGBUILD" || ! -f "$package_dir/.SRCINFO" ]]; then
+              echo "::error::Missing PKGBUILD or .SRCINFO for package '$package'"
+              return 1
+            fi
+
+            new_version="$(package_version "$package")"
+            if [[ -z "$new_version" ]]; then
+              echo "::error::Could not read pkgver for package '$package'"
+              return 1
+            fi
+
+            if package_was_updated "$package"; then
+              commit_message="chore: update $package to $new_version"
+            else
+              commit_message="chore: sync $package at $new_version"
+            fi
+
+            rm -rf "$aur_dir"
+            if ! GIT_SSH_COMMAND="$SSH_CMD" git clone \
+              "${AUR_PKGSITE}/${package}.git" "$aur_dir"; then
+              echo "::error::Failed to clone AUR package '$package'"
+              rm -rf "$aur_dir"
+              return 1
+            fi
+
+            # Copy every tracked file in the maintenance repository, including
+            # auxiliary sources such as eim-gui.desktop, but not ignored build
+            # artifacts or downloaded release archives.
+            if ! (
+              set -euo pipefail
+              file_count=0
+              while IFS= read -r -d '' file; do
+                relative="${file#"$package/"}"
+                destination="$aur_dir/$relative"
+                mkdir -p "$(dirname "$destination")"
+                cp -v "$GITHUB_WORKSPACE/$file" "$destination"
+                file_count=$((file_count + 1))
+              done < <(git -C "$GITHUB_WORKSPACE" ls-files -z -- "$package/")
+              [[ "$file_count" -gt 0 ]]
+            ); then
+              echo "::error::Failed to copy tracked files for AUR package '$package'"
+              rm -rf "$aur_dir"
+              return 1
+            fi
+
+            if ! (
+              set -euo pipefail
+              cd "$aur_dir"
+              git config user.name "$COMMIT_AUTHOR_NAME"
+              git config user.email "$COMMIT_AUTHOR_EMAIL"
+              git config core.sshCommand "$SSH_CMD"
+              git add -A
+
+              if ! git diff --cached --quiet; then
+                git commit -m "$commit_message"
+                git push origin HEAD
+              else
+                echo "::notice::AUR '$package' already matches tracked files."
+              fi
+            ); then
+              echo "::error::Failed to push AUR package '$package'"
+              rm -rf "$aur_dir"
+              return 1
+            fi
+
+            rm -rf "$aur_dir"
+          }
+
+          while IFS= read -r package; do
+            [[ -z "$package" ]] && continue
+            if package_update_failed "$package"; then
+              echo "::notice::Skipping AUR reconciliation for failed package '$package'"
+              continue
+            fi
+            if ! mirror_package "$package"; then
+              printf '%s\n' "$package" >> /tmp/failed-aur-packages
+            fi
+          done < <(
+            awk -F'"' '
+              /^\[\[package\]\]/ {
+                if (name != "" && enabled) print name
+                name = ""
+                enabled = 1
+              }
+              /^name = "/ { name = $2 }
+              /^enabled = false[[:space:]]*$/ { enabled = 0 }
+              END { if (name != "" && enabled) print name }
+            ' "$GITHUB_WORKSPACE/packages.toml"
+          )
+
+          if [[ -s /tmp/failed-aur-packages ]]; then
+            echo "::error::One or more AUR packages failed to sync:"
+            cat /tmp/failed-aur-packages
+            exit 1
           fi
 
-          rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
-          rm -rf /tmp/aur-eim-bin
+      - name: Report package failures
+        if: always()
+        run: |
+          set -euo pipefail
+          failed=false
+
+          if [[ -s /tmp/failed-packages ]]; then
+            failed=true
+            echo "::error::Package updates failed:"
+            cat /tmp/failed-packages
+          fi
+
+          if [[ -s /tmp/failed-aur-packages ]]; then
+            failed=true
+            echo "::error::AUR synchronization failed:"
+            cat /tmp/failed-aur-packages
+          fi
+
+          if [[ "$failed" == true ]]; then
+            exit 1
+          fi
 
   manual-sync:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.manual_sync == true }}
@@ -154,7 +348,7 @@ jobs:
       - name: Install system packages
         run: pacman -Syu --noconfirm --needed git openssh
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           set-safe-directory: true
@@ -172,16 +366,15 @@ jobs:
           AUR_SSH_DIR: ${{ steps.aur-ssh.outputs.ssh-dir }}
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # Mirror the author of the latest commit on the maintenance repo's
           # main branch onto the AUR commit, so manual fixes are attributed to
           # the actual maintainer rather than the CI bot.
-          AUTHOR_NAME=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=format:%an)
-          AUTHOR_EMAIL=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=format:%ae)
+          AUTHOR_NAME=$(git log -1 --pretty=format:%an)
+          AUTHOR_EMAIL=$(git log -1 --pretty=format:%ae)
           echo "::notice::AUR commit author: $AUTHOR_NAME <$AUTHOR_EMAIL>"
 
-          # Absolute paths so OpenSSH skips tilde expansion (which would use
-          # the passwd home, not $HOME) for the identity and known_hosts.
           SSH_CMD="ssh -i $AUR_SSH_DIR/id_aur \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
@@ -189,22 +382,55 @@ jobs:
             -o PasswordAuthentication=no \
             -o PreferredAuthentications=publickey"
 
-          GIT_SSH_COMMAND="$SSH_CMD" git clone "$AUR_PKGSITE" /tmp/aur-eim-bin
-          cp -v eim-bin/PKGBUILD eim-bin/.SRCINFO /tmp/aur-eim-bin/
+          cleanup() {
+            rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
+          }
+          trap cleanup EXIT
 
-          cd /tmp/aur-eim-bin
-          git config user.name  "$AUTHOR_NAME"
-          git config user.email "$AUTHOR_EMAIL"
-          git config core.sshCommand "$SSH_CMD"
+          while IFS= read -r -d '' pkgbuild; do
+            package_dir="${pkgbuild%/PKGBUILD}"
+            package="${package_dir##*/}"
+            aur_dir="/tmp/aur-$package"
 
-          git add PKGBUILD .SRCINFO
-          if ! git diff --cached --quiet; then
-            git commit -m "$COMMIT_MESSAGE"
-            git push origin HEAD
-            echo "::notice::Pushed '$COMMIT_MESSAGE' to AUR."
-          else
-            echo "::notice::AUR clone already matches tracked files; nothing to push."
-          fi
+            if [[ ! -f "$package_dir/.SRCINFO" ]]; then
+              echo "::error::Missing .SRCINFO for tracked package '$package'"
+              exit 1
+            fi
 
-          rm -f "$AUR_SSH_DIR/id_aur" "$AUR_SSH_DIR/known_hosts"
-          rm -rf /tmp/aur-eim-bin
+            rm -rf "$aur_dir"
+            GIT_SSH_COMMAND="$SSH_CMD" git clone \
+              "${AUR_PKGSITE}/${package}.git" "$aur_dir"
+
+            if ! (
+              set -euo pipefail
+              file_count=0
+              while IFS= read -r -d '' file; do
+                relative="${file#"$package_dir/"}"
+                destination="$aur_dir/$relative"
+                mkdir -p "$(dirname "$destination")"
+                cp -v "$GITHUB_WORKSPACE/$file" "$destination"
+                file_count=$((file_count + 1))
+              done < <(git -C "$GITHUB_WORKSPACE" ls-files -z -- "$package_dir/")
+              [[ "$file_count" -gt 0 ]]
+            ); then
+              echo "::error::Failed to copy tracked files for AUR package '$package'"
+              exit 1
+            fi
+
+            cd "$aur_dir"
+            git config user.name "$AUTHOR_NAME"
+            git config user.email "$AUTHOR_EMAIL"
+            git config core.sshCommand "$SSH_CMD"
+
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "$COMMIT_MESSAGE"
+              git push origin HEAD
+              echo "::notice::Pushed '$COMMIT_MESSAGE' to AUR package '$package'."
+            else
+              echo "::notice::AUR package '$package' already matches tracked files."
+            fi
+
+            cd "$GITHUB_WORKSPACE"
+            rm -rf "$aur_dir"
+          done < <(git ls-files -z -- ':(glob)**/PKGBUILD')
