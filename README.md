@@ -14,6 +14,8 @@ here and reconciles the tracked package files with AUR.
 packages.toml        # list of packages + upstream sources
 eim-bin/             # mirror of the AUR package directory (tracked files only)
 snander/             # mirror of the AUR package directory (tracked files only)
+hp-charge-limit-rs/  # mirror of the AUR package directory (tracked files only)
+hp-charge-limit-rs-bin/ # mirror of the AUR package directory (tracked files only)
 .github/workflows/   # update workflow
 ```
 
@@ -58,6 +60,45 @@ The `.zip` release artifacts, `pkg/`, `src/`, and `icon.png` are not tracked
 - **Update path:** when a new release appears, `aur-updater` updates the
   version and checksum, regenerates `.SRCINFO`, then CI commits the change here
   and pushes the updated tracked package files to the AUR package repository.
+
+### hp-charge-limit-rs
+
+- **AUR package:**
+  [`hp-charge-limit-rs`](https://aur.archlinux.org/packages/hp-charge-limit-rs)
+  (built from source with `cargo`)
+- **Upstream source:** GitHub release tag from
+  [`kralonur/hp-charge-limit-rs`](https://github.com/kralonur/hp-charge-limit-rs),
+  tracked via [aur-updater](https://github.com/kralonur/aur-updater)
+  `source = "github_release"`.
+- **Version detection:** latest non-prerelease GitHub release tag, with the `v`
+  prefix stripped (e.g. `v0.3.0` -> `0.3.0`).
+- **Architecture:** `x86_64`.
+- **Mirrored files** under `hp-charge-limit-rs/`:
+  - `PKGBUILD`
+  - `.SRCINFO`
+- **Update path:** when a new release appears, `aur-updater` bumps `pkgver`,
+  resets `pkgrel=1`, refreshes the source tarball checksum, regenerates
+  `.SRCINFO`, then CI commits the change here and pushes the updated tracked
+  package files to the AUR package repository.
+
+### hp-charge-limit-rs-bin
+
+- **AUR package:**
+  [`hp-charge-limit-rs-bin`](https://aur.archlinux.org/packages/hp-charge-limit-rs-bin)
+  (prebuilt static musl binaries; conflicts with `hp-charge-limit-rs`)
+- **Upstream source:** release archives from
+  [`kralonur/hp-charge-limit-rs`](https://github.com/kralonur/hp-charge-limit-rs),
+  tracked via [aur-updater](https://github.com/kralonur/aur-updater)
+  `source = "github_release"`.
+- **Version detection:** same as `hp-charge-limit-rs`.
+- **Architectures:** `x86_64`, `aarch64`.
+- **Mirrored files** under `hp-charge-limit-rs-bin/`:
+  - `PKGBUILD`
+  - `.SRCINFO`
+- **Update path:** when a new release appears, `aur-updater` bumps `pkgver`,
+  resets `pkgrel=1`, refreshes the per-arch `sha256sums_*` blocks via
+  `updpkgsums`, regenerates `.SRCINFO`, then CI commits the change here and
+  pushes the updated tracked package files to the AUR package repository.
 
 The update workflow processes every package configured in `packages.toml`,
 creates a separate maintenance-repository commit for each changed package, and

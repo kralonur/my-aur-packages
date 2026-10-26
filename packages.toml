@@ -13,3 +13,19 @@ source = "github_release"
 repo = "McMCCRU/SNANDer"
 strip_prefixes = ["v."]
 reset_pkgrel = true
+
+[[package]]
+name = "hp-charge-limit-rs"
+path = "hp-charge-limit-rs"
+source = "github_release"
+repo = "kralonur/hp-charge-limit-rs"
+strip_prefixes = ["v"]
+reset_pkgrel = true
+
+[[package]]
+name = "hp-charge-limit-rs-bin"
+path = "hp-charge-limit-rs-bin"
+source = "github_release"
+repo = "kralonur/hp-charge-limit-rs"
+strip_prefixes = ["v"]
+reset_pkgrel = true
